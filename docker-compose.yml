@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  telegram-forwarder:
+    build: .
+    container_name: telegram-forwarder
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    environment:
+      - TZ=UTC
+    healthcheck:
+      test: ["CMD", "python", "status.py"]
+      interval: 5m
+      timeout: 30s
+      retries: 3
+      start_period: 40s
