@@ -20,6 +20,18 @@ from pathlib import Path
 from collections import deque
 from typing import Optional, Deque
 
+# Fix Windows terminal encoding issues
+if sys.platform == 'win32':
+    try:
+        import locale
+        import codecs
+        if sys.stdout.encoding != 'utf-8':
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        if sys.stderr.encoding != 'utf-8':
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except:
+        pass
+
 from telethon import TelegramClient, events
 from telethon.errors import RPCError, FloodWaitError
 from telethon.tl.types import (

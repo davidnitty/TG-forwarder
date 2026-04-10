@@ -12,6 +12,16 @@ from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from typing import Optional
 
+# Fix Windows terminal encoding issues (must be done before logging setup)
+if sys.platform == 'win32':
+    try:
+        if sys.stdout.encoding != 'utf-8':
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        if sys.stderr.encoding != 'utf-8':
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except:
+        pass
+
 
 class ForwarderLogger:
     """

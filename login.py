@@ -12,10 +12,21 @@ SECURITY WARNING:
 """
 
 import asyncio
+import sys
 from datetime import datetime
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
 from config import get_config
+
+# Fix Windows terminal encoding issues
+if sys.platform == 'win32':
+    try:
+        if sys.stdout.encoding != 'utf-8':
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        if sys.stderr.encoding != 'utf-8':
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except:
+        pass
 
 
 def get_timestamp() -> str:

@@ -105,6 +105,57 @@ python status.py
 
 Press `Ctrl+C` in the terminal
 
+## Local Testing
+
+### Test Your Setup
+
+Before running the bot continuously, it's recommended to test your configuration:
+
+```bash
+python test_setup.py
+```
+
+This script will:
+- ✅ Verify your `.env` file exists
+- ✅ Validate all required environment variables (API_ID, API_HASH, DESTINATION_GROUP)
+- ✅ Check configuration formats (API_ID is numeric, DESTINATION_GROUP is negative)
+- ✅ Connect to Telegram using your credentials
+- ✅ Verify destination group access
+- ✅ Send a test message: "🧪 Forwarder setup test!"
+- ✅ Report success/failure with clear, color-coded output
+
+**What to expect on first run:**
+
+1. **If not authenticated:**
+   ```
+   ❌ Not authorized! Please run login.py first
+   ```
+   Solution: Run `python login.py` and complete authentication
+
+2. **If successful:**
+   ```
+   ✅ All tests passed! Your setup is working correctly.
+   📱 Check your destination group for the test message!
+   ```
+
+3. **If destination group inaccessible:**
+   ```
+   ❌ Cannot access destination group
+   ```
+   Solution: Make sure you've added your bot account to the group
+
+### Troubleshooting Test Failures
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| `No .env file found` | Missing configuration | Run `cp .env.example .env` and fill in your values |
+| `API_ID must be a number` | Invalid API_ID format | Ensure API_ID is numeric (e.g., `12345678`) |
+| `DESTINATION_GROUP must be negative` | Invalid group ID | Group IDs start with `-100` (e.g., `-1001234567890`) |
+| `Not authorized` | Not logged in | Run `python login.py` and complete authentication |
+| `Cannot access destination group` | Bot not in group | Add your bot account to the destination group |
+
+**Security Note:** The test script never prints or logs your actual credential values. It only confirms their presence/absence and validates formats.
+
 ## Running on VPS
 
 ### Using Systemd (Linux)
@@ -172,6 +223,7 @@ docker run -d --name forwarder --restart unless-stopped telegram-forwarder
 telegram-forwarder/
 ├── main.py                  # Core forwarding logic
 ├── login.py                 # Authentication helper
+├── test_setup.py            # Setup testing script
 ├── status.py                # Status checker
 ├── requirements.txt         # Python dependencies
 ├── .env.example            # Environment template
@@ -205,11 +257,38 @@ telegram-forwarder/
 
 ## Security Notes
 
-- **NEVER** commit `.env` file to version control
-- **NEVER** share your session files
-- Keep `api_hash` private
-- Use strong 2FA on your Telegram account
-- Consider using a separate Telegram account for the bot
+**CRITICAL: Protect Your Credentials**
+
+- 🔐 **NEVER** commit `.env` file to version control
+- 🔐 **NEVER** commit `*.session` or `*.session-journal` files
+- 🔐 **NEVER** share your session files with anyone
+- 🔐 **ALWAYS** verify `.gitignore` includes `.env` and `*.session`
+- 🔐 Keep `api_hash` private and secure
+- 🔐 Use strong 2FA on your Telegram account
+- 🔐 Consider using a separate Telegram account for the bot
+
+**Verify Your .gitignore:**
+
+Your `.gitignore` file should include these entries:
+```gitignore
+# Environment variables
+.env
+
+# Telethon session files
+*.session
+*.session-journal
+
+# Application data
+forwarded_messages.txt
+forwarder.log
+```
+
+To verify these files are ignored, run:
+```bash
+git status
+```
+
+You should **NOT** see `.env` or any `.session` files in the output. If you do, do NOT commit them!
 
 ## Logging
 
