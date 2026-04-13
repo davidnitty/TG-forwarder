@@ -6,11 +6,17 @@ to a private group with optional watermarking, duplicate prevention, filtering,
 rate limiting, enhanced logging, and status commands.
 
 Advanced Features:
-- Message filtering (keywords, blocklist, CA detection)
+- Smart message filtering (Top Early Trending updates, keywords, blocklist, CA detection)
 - Rate limiting with random delays
 - Enhanced logging with rotation
 - /status command in destination chat
 - Graceful shutdown with signal handling
+
+Message Filtering:
+- Automatically skips "Top Early Trending" leaderboard updates
+- Configurable via SKIP_TRENDING_UPDATES environment variable
+- Supports keyword whitelisting and blocklist
+- Optional crypto address requirement
 """
 
 import asyncio
@@ -51,7 +57,7 @@ from telethon.tl.types import (
 
 # Import custom modules
 from config import get_config, Config
-from filters import get_filters, MessageFilters
+from filters import get_filters, MessageFilters, should_forward_message
 from logger import setup_logger, get_logger as get_forwarder_logger
 from utils import (
     RateLimiter,
@@ -318,6 +324,20 @@ class TelegramForwarder:
             # Check for duplicates
             if self._is_duplicate(message_id):
                 self.logger.debug(f"Skipping duplicate message {message_id}")
+                return False
+
+            # Check Top Early Trending filter (always active, respects env var)
+            if message.text and not should_forward_message(message.text):
+                self.logger.info(f"Message {message_id} blocked: Top Early Trending update")
+                get_forwarder_logger().log_forwarded_message(
+                    message_id=message_id,
+                    source=self.source_channel,
+                    destination=self.destination_group,
+                    status='blocked',
+                    has_media=bool(message.media),
+                    filter_reason="Top Early Trending leaderboard update"
+                )
+                self.stats.record_blocked()
                 return False
 
             # Check filters if enabled

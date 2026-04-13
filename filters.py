@@ -72,6 +72,36 @@ class MessageFilters:
             return []
         return [item.strip().lower() for item in env_value.split(',') if item.strip()]
 
+    def is_top_trending_update(self, text: str) -> bool:
+        """
+        Detect if message is a 'Top Early Trending' leaderboard update.
+        Return True if it should be SKIPPED (not forwarded).
+
+        Args:
+            text: Message text to check
+
+        Returns:
+            True if message is a leaderboard update that should be skipped
+        """
+        if not text:
+            return False
+
+        # Key indicators of leaderboard updates
+        skip_patterns = [
+            r'🏆.*Top Early Trending',           # Header with trophy emoji
+            r'🥇.*\d+X',                          # Gold medal + multiplier
+            r'🥈.*\d+X',                          # Silver medal + multiplier
+            r'🥉.*\d+X',                          # Bronze medal + multiplier
+            r'BUY TRENDING 🚀',                   # Button text
+            r'ⓓ.*ⓔ.*ⓐ.*ⓛ.*ⓔ.*ⓡ.*ⓣ.*ⓡ.*ⓔ.*ⓝ.*ⓖ.*ⓘ.*ⓝ.*ⓖ',  # Circled text variant
+        ]
+
+        # Check for multiple indicators (more reliable)
+        matches = sum(1 for pattern in skip_patterns if re.search(pattern, text, re.IGNORECASE))
+
+        # Skip if 2+ indicators found (reduces false positives)
+        return matches >= 2
+
     def check_keywords(self, text: str) -> bool:
         """
         Check if text contains any required keywords.
@@ -156,6 +186,11 @@ class MessageFilters:
                 return False, "No text and CA required"
             return True, "No text to filter"
 
+        # Skip Top Early Trending leaderboard updates
+        if self.is_top_trending_update(text):
+            self.stats['blocked'] += 1
+            return False, "Top Early Trending leaderboard update"
+
         # Check blocklist first
         if not self.check_blocklist(text):
             self.stats['blocked'] += 1
@@ -197,6 +232,35 @@ class MessageFilters:
 
 # Global filter instance
 filters = MessageFilters()
+
+
+def should_forward_message(text: str, skip_trending: bool = True) -> bool:
+    """
+    Standalone filter function to check if a message should be forwarded.
+    This is a convenience function for direct use in event handlers.
+
+    Args:
+        text: Message text to check
+        skip_trending: Whether to skip trending updates (default: true,
+                      can be overridden via SKIP_TRENDING_UPDATES env var)
+
+    Returns:
+        True if message should be forwarded, False if it should be skipped
+    """
+    if not text:
+        return True  # Forward media-only messages
+
+    # Check environment variable for skip_trending setting
+    # Can be overridden by function parameter
+    env_skip_trending = os.getenv('SKIP_TRENDING_UPDATES', 'true').lower() == 'true'
+    should_skip = skip_trending and env_skip_trending
+
+    # Skip Top Early Trending updates if enabled
+    if should_skip and filters.is_top_trending_update(text):
+        return False
+
+    # Add more filters here in future (spam, scams, etc.)
+    return True
 
 
 def get_filters() -> MessageFilters:
