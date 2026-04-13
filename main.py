@@ -60,6 +60,7 @@ from utils import (
     format_timestamp,
     format_number,
 )
+from formatter import init_formatter, get_formatter
 
 
 class TelegramForwarder:
@@ -114,6 +115,17 @@ class TelegramForwarder:
                           f"require_ca={self.filters.require_ca}")
         else:
             self.logger.info("Filters disabled")
+
+        # Initialize enhanced formatter if enabled
+        self.enhanced_formatter = None
+        if self.config.enable_enhanced_formatting:
+            self.enhanced_formatter = init_formatter(
+                custom_watermark=self.config.custom_watermark_enhanced,
+                strip_watermarks=self.config.strip_source_watermarks
+            )
+            self.logger.info(f"Enhanced formatting enabled for channels: {self.config.enhanced_formatting_channels}")
+        else:
+            self.logger.info("Enhanced formatting disabled")
 
         # Initialize rate limiter
         self.rate_limiter = RateLimiter(
@@ -195,6 +207,16 @@ class TelegramForwarder:
         """Check if a message has already been forwarded."""
         return message_id in self.forwarded_messages
 
+    def _should_use_enhanced_formatting(self) -> bool:
+        """Check if enhanced formatting should be applied to current source."""
+        if not self.enhanced_formatter:
+            return False
+
+        source_normalized = self.source_channel.lower().lstrip('@')
+        enabled_normalized = [ch.lower().lstrip('@') for ch in self.config.enhanced_formatting_channels]
+
+        return source_normalized in enabled_normalized
+
     def _add_watermark_to_text(self, text: Optional[str]) -> str:
         """Add watermark to text message (only for text-only messages)."""
         if not self.watermark:
@@ -204,10 +226,31 @@ class TelegramForwarder:
             return f"{text}\n\n{self.watermark}"
         return self.watermark
 
+    def _format_message_text(self, text: Optional[str]) -> str:
+        """
+        Format message text with either enhanced formatting or standard watermark.
+
+        Args:
+            text: Original message text
+
+        Returns:
+            Formatted text
+        """
+        if not text:
+            return text or ''
+
+        # Use enhanced formatting if enabled for this channel
+        if self._should_use_enhanced_formatting():
+            self.logger.debug("Applying enhanced formatting")
+            return self.enhanced_formatter.format_solana_message(text)
+
+        # Use standard watermark
+        return self._add_watermark_to_text(text)
+
     async def _forward_text_only_message(self, message: Message) -> bool:
-        """Forward a text-only message with watermark."""
+        """Forward a text-only message with watermark or enhanced formatting."""
         try:
-            text = self._add_watermark_to_text(message.text)
+            text = self._format_message_text(message.text)
 
             await self.client.send_message(
                 self.destination_group,

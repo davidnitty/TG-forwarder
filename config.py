@@ -5,8 +5,19 @@ Handles loading environment variables, validation, and providing defaults.
 """
 
 import os
+import sys
 from typing import Optional
 from dotenv import load_dotenv
+
+# Fix Windows console encoding for emoji support
+if sys.platform == 'win32':
+    try:
+        if sys.stdout.encoding != 'utf-8':
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        if sys.stderr.encoding != 'utf-8':
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except:
+        pass
 
 # Load environment variables from .env file
 load_dotenv()
@@ -61,6 +72,12 @@ class Config:
         self.log_max_file_size: int = int(os.getenv('LOG_MAX_FILE_SIZE', '10')) * 1024 * 1024  # Convert MB to bytes
         self.log_backup_count: int = int(os.getenv('LOG_BACKUP_COUNT', '5'))
         self.log_verbose: bool = os.getenv('LOG_VERBOSE', 'false').lower() == 'true'
+
+        # Enhanced formatting settings
+        self.enable_enhanced_formatting: bool = os.getenv('ENABLE_ENHANCED_FORMATTING', 'false').lower() == 'true'
+        self.enhanced_formatting_channels: list = self._parse_channel_list(os.getenv('ENHANCED_FORMATTING_CHANNELS', ''))
+        self.strip_source_watermarks: bool = os.getenv('STRIP_SOURCE_WATERMARKS', 'true').lower() == 'true'
+        self.custom_watermark_enhanced: str = os.getenv('CUSTOM_WATERMARK_ENHANCED', '📡 via Fire intern')
 
         # Validate log level
         valid_log_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR']
@@ -167,6 +184,14 @@ class Config:
         print(f"  Backup Count:         {self.log_backup_count}")
         print(f"  Verbose Console:      {'✅ Yes' if self.log_verbose else '❌ No'}")
 
+        # Enhanced formatting configuration
+        print("\n✨ ENHANCED FORMATTING:")
+        print(f"  Enhanced Formatting:  {'✅ Yes' if self.enable_enhanced_formatting else '❌ No'}")
+        if self.enable_enhanced_formatting:
+            print(f"  Active Channels:      {', '.join(['@' + ch for ch in self.enhanced_formatting_channels]) if self.enhanced_formatting_channels else '(none)'}")
+            print(f"  Strip Watermarks:     {'✅ Yes' if self.strip_source_watermarks else '❌ No'}")
+            print(f"  Custom Watermark:     {self.custom_watermark_enhanced}")
+
         # Masked sensitive fields
         print("\n🔐 API CREDENTIALS:")
         print(f"  API ID:               {self.api_id} (✓ valid)")
@@ -195,6 +220,21 @@ class Config:
         if len(self.watermark) > 30:
             return f"✅ Enabled ({self.watermark[:20]}...)"
         return f"✅ Enabled ('{self.watermark}')"
+
+    @staticmethod
+    def _parse_channel_list(env_value: str) -> list:
+        """
+        Parse comma-separated list of channels from environment variable.
+
+        Args:
+            env_value: Comma-separated string of channel usernames
+
+        Returns:
+            List of trimmed channel usernames
+        """
+        if not env_value:
+            return []
+        return [item.strip().lstrip('@') for item in env_value.split(',') if item.strip()]
 
 
 # Global config instance
