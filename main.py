@@ -24,7 +24,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from collections import deque
-from typing import Optional, Deque
+from typing import Optional, Deque, List
 
 # Fix Windows terminal encoding issues
 if sys.platform == 'win32':
@@ -73,7 +73,7 @@ class TelegramForwarder:
     """
     Telegram Forwarder Bot class with advanced features.
 
-    Handles monitoring a source channel and forwarding messages to a destination
+    Handles monitoring multiple source channels and forwarding messages to a destination
     group with watermarking, duplicate prevention, filtering, rate limiting,
     and enhanced logging.
     """
@@ -96,10 +96,14 @@ class TelegramForwarder:
         self.api_id: int = self.config.api_id
         self.api_hash: str = self.config.api_hash
         self.session_name: str = self.config.session_name
-        self.source_channel: str = self.config.source_channel
+        self.source_channels: List[str] = self.config.source_channels
+        self.source_channel: str = self.config.source_channel  # For backward compatibility
         self.destination_group: int = self.config.destination_group
         self.watermark: str = self.config.watermark
         self.max_cache_size: int = self.config.max_cache_size
+
+        # Track which source channel each message ID came from
+        self.message_sources: dict = {}  # {message_id: source_channel}
 
         # Setup enhanced logger
         self.logger = setup_logger(
@@ -162,7 +166,11 @@ class TelegramForwarder:
             self.api_hash
         )
 
-        self.logger.info(f"Source channel: @{self.source_channel}")
+        if len(self.source_channels) > 1:
+            self.logger.info(f"Source channels: {', '.join(['@' + ch for ch in self.source_channels])}")
+            self.logger.info(f"Total sources: {len(self.source_channels)} channels")
+        else:
+            self.logger.info(f"Source channel: @{self.source_channel}")
         self.logger.info(f"Destination group: {self.destination_group}")
         self.logger.info(f"Watermark: '{self.watermark}'" if self.watermark else "Watermark disabled")
         self.logger.info(f"Max cache size: {self.max_cache_size} messages")
@@ -213,12 +221,12 @@ class TelegramForwarder:
         """Check if a message has already been forwarded."""
         return message_id in self.forwarded_messages
 
-    def _should_use_enhanced_formatting(self) -> bool:
+    def _should_use_enhanced_formatting(self, source_channel: str) -> bool:
         """Check if enhanced formatting should be applied to current source."""
         if not self.enhanced_formatter:
             return False
 
-        source_normalized = self.source_channel.lower().lstrip('@')
+        source_normalized = source_channel.lower().lstrip('@')
         enabled_normalized = [ch.lower().lstrip('@') for ch in self.config.enhanced_formatting_channels]
 
         return source_normalized in enabled_normalized
@@ -232,12 +240,13 @@ class TelegramForwarder:
             return f"{text}\n\n{self.watermark}"
         return self.watermark
 
-    def _format_message_text(self, text: Optional[str]) -> str:
+    def _format_message_text(self, text: Optional[str], source_channel: str) -> str:
         """
         Format message text with either enhanced formatting or standard watermark.
 
         Args:
             text: Original message text
+            source_channel: Source channel username
 
         Returns:
             Formatted text
@@ -246,17 +255,17 @@ class TelegramForwarder:
             return text or ''
 
         # Use enhanced formatting if enabled for this channel
-        if self._should_use_enhanced_formatting():
+        if self._should_use_enhanced_formatting(source_channel):
             self.logger.debug("Applying enhanced formatting")
             return self.enhanced_formatter.format_solana_message(text)
 
         # Use standard watermark
         return self._add_watermark_to_text(text)
 
-    async def _forward_text_only_message(self, message: Message) -> bool:
+    async def _forward_text_only_message(self, message: Message, source_channel: str) -> bool:
         """Forward a text-only message with watermark or enhanced formatting."""
         try:
-            text = self._format_message_text(message.text)
+            text = self._format_message_text(message.text, source_channel)
 
             await self.client.send_message(
                 self.destination_group,
@@ -311,9 +320,13 @@ class TelegramForwarder:
             self.logger.error(f"Failed to forward media message {message.id}: {e}")
             return False
 
-    async def _forward_message(self, message: Message) -> bool:
+    async def _forward_message(self, message: Message, source_channel: str) -> bool:
         """
         Smart forward function with filtering, rate limiting, and logging.
+
+        Args:
+            message: The message to forward
+            source_channel: The source channel username
 
         Returns:
             True if message was forwarded successfully, False otherwise
@@ -321,9 +334,26 @@ class TelegramForwarder:
         try:
             message_id = message.id
 
+            # Track which source channel this message came from
+            self.message_sources[message_id] = source_channel
+
             # Check for duplicates
             if self._is_duplicate(message_id):
-                self.logger.debug(f"Skipping duplicate message {message_id}")
+                self.logger.debug(f"Skipping duplicate message {message_id} from @{source_channel}")
+                return False
+
+            # Check Top Early Trending filter (always active, respects env var)
+            if message.text and not should_forward_message(message.text):
+                self.logger.info(f"Message {message_id} from @{source_channel} blocked: Top Early Trending update")
+                get_forwarder_logger().log_forwarded_message(
+                    message_id=message_id,
+                    source=source_channel,
+                    destination=self.destination_group,
+                    status='blocked',
+                    has_media=bool(message.media),
+                    filter_reason="Top Early Trending leaderboard update"
+                )
+                self.stats.record_blocked()
                 return False
 
             # Check Top Early Trending filter (always active, respects env var)
@@ -345,10 +375,10 @@ class TelegramForwarder:
             if self.filters.enabled:
                 should_forward, reason = self.filters.should_forward(message.text)
                 if not should_forward:
-                    self.logger.debug(f"Message {message_id} blocked by filters: {reason}")
+                    self.logger.debug(f"Message {message_id} from @{source_channel} blocked by filters: {reason}")
                     get_forwarder_logger().log_forwarded_message(
                         message_id=message_id,
-                        source=self.source_channel,
+                        source=source_channel,
                         destination=self.destination_group,
                         status='blocked',
                         has_media=bool(message.media),
@@ -362,13 +392,13 @@ class TelegramForwarder:
             await self.rate_limiter.acquire_slot()
 
             # Forward the message
-            print(f"[INFO] {self._get_timestamp()} - Processing message {message_id}")
+            print(f"[INFO] {self._get_timestamp()} - Processing message {message_id} from @{source_channel}")
             success = False
 
             if message.media:
                 success = await self._forward_media_message(message)
             else:
-                success = await self._forward_text_only_message(message)
+                success = await self._forward_text_only_message(message, source_channel)
 
             if success:
                 self._save_message_to_cache(message_id)
@@ -376,26 +406,26 @@ class TelegramForwarder:
 
                 get_forwarder_logger().log_forwarded_message(
                     message_id=message_id,
-                    source=self.source_channel,
+                    source=source_channel,
                     destination=self.destination_group,
                     status='success',
                     has_media=bool(message.media)
                 )
 
-                self.logger.info(f"Successfully forwarded message {message_id}")
-                print(f"[SUCCESS] {self._get_timestamp()} - Forwarded message {message_id}")
+                self.logger.info(f"Successfully forwarded message {message_id} from @{source_channel}")
+                print(f"[SUCCESS] {self._get_timestamp()} - Forwarded message {message_id} from @{source_channel}")
             else:
                 self.stats.record_forward(message_id, success=False)
 
                 get_forwarder_logger().log_forwarded_message(
                     message_id=message_id,
-                    source=self.source_channel,
+                    source=source_channel,
                     destination=self.destination_group,
                     status='failed',
                     has_media=bool(message.media)
                 )
 
-                print(f"[ERROR] {self._get_timestamp()} - Failed to forward message {message_id}")
+                print(f"[ERROR] {self._get_timestamp()} - Failed to forward message {message_id} from @{source_channel}")
 
             return success
 
@@ -406,7 +436,7 @@ class TelegramForwarder:
                 pause_seconds=e.seconds
             )
             await asyncio.sleep(e.seconds)
-            return await self._forward_message(message)
+            return await self._forward_message(message, source_channel)
 
         except RPCError as e:
             self.logger.error(f"RPC error forwarding message {message.id}: {e}")
@@ -423,7 +453,12 @@ class TelegramForwarder:
 
         try:
             message: Message = event.message
-            await self._forward_message(message)
+
+            # Extract source channel from event
+            chat = await event.get_chat()
+            source_channel = getattr(chat, 'username', None) or str(chat.id)
+
+            await self._forward_message(message, source_channel)
 
         except Exception as e:
             self.logger.error(f"Error in new message handler: {e}")
@@ -435,8 +470,13 @@ class TelegramForwarder:
 
         try:
             message: Message = event.message
-            self.logger.info(f"Message edited: {message.id}, forwarding update")
-            await self._forward_message(message)
+
+            # Extract source channel from event
+            chat = await event.get_chat()
+            source_channel = getattr(chat, 'username', None) or str(chat.id)
+
+            self.logger.info(f"Message edited: {message.id} from @{source_channel}, forwarding update")
+            await self._forward_message(message, source_channel)
 
         except Exception as e:
             self.logger.error(f"Error in edited message handler: {e}")
@@ -524,14 +564,21 @@ class TelegramForwarder:
             self.logger.info(f"Authorized as: {me.first_name} (@{me.username})")
             print(f"[INFO] {self._get_timestamp()} - Authorized as: {me.first_name} (@{me.username})")
 
-            # Get source channel entity
-            try:
-                source_entity = await self.client.get_entity(self.source_channel)
-                self.logger.info(f"Source channel: {source_entity.title}")
-                print(f"[INFO] {self._get_timestamp()} - Source channel: {source_entity.title}")
-            except Exception as e:
-                self.logger.error(f"Cannot access source channel: {e}")
-                print(f"[ERROR] {self._get_timestamp()} - Cannot access source channel: {e}")
+            # Get all source channel entities
+            source_entities = []
+            for source_channel in self.source_channels:
+                try:
+                    source_entity = await self.client.get_entity(source_channel)
+                    source_entities.append(source_entity)
+                    self.logger.info(f"Source channel: @{source_channel} - {source_entity.title}")
+                    print(f"[INFO] {self._get_timestamp()} - Source channel: @{source_channel} - {source_entity.title}")
+                except Exception as e:
+                    self.logger.error(f"Cannot access source channel @{source_channel}: {e}")
+                    print(f"[ERROR] {self._get_timestamp()} - Cannot access source channel @{source_channel}: {e}")
+
+            # If no source channels are accessible, exit
+            if not source_entities:
+                print(f"[ERROR] {self._get_timestamp()} - No accessible source channels. Exiting.")
                 return
 
             # Get destination group entity
@@ -544,19 +591,19 @@ class TelegramForwarder:
                 print(f"[ERROR] {self._get_timestamp()} - Cannot access destination group: {e}")
                 return
 
-            # Register NewMessage event handler for source channel
+            # Register NewMessage event handler for all source channels
             self.client.add_event_handler(
                 self._handle_new_message,
-                events.NewMessage(chats=self.source_channel)
+                events.NewMessage(chats=self.source_channels)
             )
-            self.logger.info(f"NewMessage handler registered for @{self.source_channel}")
+            self.logger.info(f"NewMessage handler registered for {len(self.source_channels)} channels: {', '.join(['@' + ch for ch in self.source_channels])}")
 
-            # Register MessageEdited event handler for source channel
+            # Register MessageEdited event handler for all source channels
             self.client.add_event_handler(
                 self._handle_edited_message,
-                events.MessageEdited(chats=self.source_channel)
+                events.MessageEdited(chats=self.source_channels)
             )
-            self.logger.info(f"MessageEdited handler registered for @{self.source_channel}")
+            self.logger.info(f"MessageEdited handler registered for {len(self.source_channels)} channels: {', '.join(['@' + ch for ch in self.source_channels])}")
 
             # Register command handler for destination group
             self.client.add_event_handler(
@@ -566,6 +613,10 @@ class TelegramForwarder:
             self.logger.info(f"Command handler registered for destination group")
 
             print(f"\n[SUCCESS] {self._get_timestamp()} - Bot is running and monitoring for messages...")
+            if len(self.source_channels) > 1:
+                print(f"[INFO] {self._get_timestamp()} - Monitoring {len(self.source_channels)} source channels: {', '.join(['@' + ch for ch in self.source_channels])}")
+            else:
+                print(f"[INFO] {self._get_timestamp()} - Monitoring source channel: @{self.source_channels[0]}")
             print(f"[INFO] {self._get_timestamp()} - Cache contains {len(self.forwarded_messages)} message IDs")
             print(f"[INFO] {self._get_timestamp()} - Send /status in destination group for bot statistics")
             print(f"[INFO] {self._get_timestamp()} - Press Ctrl+C to stop\n")
@@ -615,7 +666,8 @@ class TelegramForwarder:
                 'connected': self.client.is_connected(),
                 'user': me.first_name,
                 'username': me.username,
-                'source_channel': self.source_channel,
+                'source_channels': self.source_channels,
+                'source_channel': self.source_channel,  # For backward compatibility
                 'destination_group': self.destination_group,
                 'cache_size': len(self.forwarded_messages),
                 'max_cache_size': self.max_cache_size,

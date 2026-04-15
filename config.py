@@ -47,7 +47,19 @@ class Config:
 
         # Optional fields with defaults
         self.session_name: str = os.getenv('SESSION_NAME', self.DEFAULT_SESSION_NAME)
-        self.source_channel: str = os.getenv('SOURCE_CHANNEL', self.DEFAULT_SOURCE_CHANNEL)
+
+        # Support both single SOURCE_CHANNEL and multiple SOURCE_CHANNELS
+        source_channels_env = os.getenv('SOURCE_CHANNELS', '')
+        if source_channels_env:
+            # New multi-channel format
+            self.source_channels: list = self._parse_channel_list(source_channels_env)
+            # For backward compatibility, also set source_channel to first channel
+            self.source_channel: str = self.source_channels[0] if self.source_channels else self.DEFAULT_SOURCE_CHANNEL
+        else:
+            # Old single-channel format
+            self.source_channel: str = os.getenv('SOURCE_CHANNEL', self.DEFAULT_SOURCE_CHANNEL)
+            self.source_channels: list = [self.source_channel]
+
         self.destination_group: int = self._load_destination_group()
         self.watermark: str = os.getenv('WATERMARK', self.DEFAULT_WATERMARK)
         self.log_level: str = os.getenv('LOG_LEVEL', self.DEFAULT_LOG_LEVEL).upper()
@@ -157,7 +169,11 @@ class Config:
         # Basic configuration
         print("\n📋 BASIC SETTINGS:")
         print(f"  Session Name:         {self.session_name}")
-        print(f"  Source Channel:       @{self.source_channel}")
+        if len(self.source_channels) > 1:
+            print(f"  Source Channels:      {', '.join(['@' + ch for ch in self.source_channels])}")
+            print(f"  Total Sources:        {len(self.source_channels)} channels")
+        else:
+            print(f"  Source Channel:       @{self.source_channel}")
         print(f"  Destination Group:    {self._mask_group_id(self.destination_group)}")
         print(f"  Watermark:            {self._mask_watermark()}")
         print(f"  Max Cache Size:       {self.max_cache_size} messages")
