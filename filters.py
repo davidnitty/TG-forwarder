@@ -56,6 +56,7 @@ class MessageFilters:
             'blocked_by_blocklist': 0,
             'blocked_by_ca_requirement': 0,
             'blocked_by_milestone': 0,
+            'blocked_by_paid_alerts': 0,
         }
 
     @staticmethod
@@ -147,6 +148,54 @@ class MessageFilters:
 
         # Check if any milestone pattern matches
         for pattern in milestone_patterns:
+            if re.search(pattern, text_lower):
+                return True
+
+        return False
+
+    def is_dexscreener_paid_alert(self, text: str) -> bool:
+        """
+        Detect if message is a DexScreener PAID/payment alert.
+        Return True if it should be SKIPPED (not forwarded).
+
+        Blocks messages like:
+        - "PAID: Profile payment approved"
+        - "DexScreener payment received"
+        - "Profile boost activated - PAID"
+
+        Args:
+            text: Message text to check
+
+        Returns:
+            True if message is a DexScreener paid alert that should be skipped
+        """
+        if not text:
+            return False
+
+        # Patterns indicating DexScreener PAID alerts
+        paid_patterns = [
+            # DexScreener specific payment language
+            r'dexscreener.*\b(paid|payment|boost|profile|approval)\b',
+            r'\b(paid|payment).*dexscreener',
+            r'profile.*payment.*approved',
+
+            # Common PAID alert formats
+            r'🔔\s*PAID\s*🔔',
+            r'\[PAID\]',
+            r'⚡\s*PAID\s*⚡',
+            r'payment\s+(approved|received|confirmed|completed)',
+            r'profile\s+(boost|promotion|upgrade)\s+(paid|active|activated)',
+
+            # Payment confirmation phrases
+            r'thanks\s+for\s+(the\s+)?payment',
+            r'payment\s+success',
+            r'transaction\s+(confirmed|complete)',
+        ]
+
+        text_lower = text.lower()
+
+        # Check if any paid alert pattern matches
+        for pattern in paid_patterns:
             if re.search(pattern, text_lower):
                 return True
 
@@ -247,6 +296,12 @@ class MessageFilters:
             self.stats['blocked_by_milestone'] += 1
             return False, "Milestone/multiplier alert"
 
+        # Skip DexScreener PAID/payment alerts
+        if self.is_dexscreener_paid_alert(text):
+            self.stats['blocked'] += 1
+            self.stats['blocked_by_paid_alerts'] += 1
+            return False, "DexScreener paid alert"
+
         # Check blocklist first
         if not self.check_blocklist(text):
             self.stats['blocked'] += 1
@@ -284,6 +339,7 @@ class MessageFilters:
             'blocked_by_blocklist': 0,
             'blocked_by_ca_requirement': 0,
             'blocked_by_milestone': 0,
+            'blocked_by_paid_alerts': 0,
         }
 
 
@@ -291,7 +347,7 @@ class MessageFilters:
 filters = MessageFilters()
 
 
-def should_forward_message(text: str, skip_trending: bool = True, skip_milestones: bool = True) -> bool:
+def should_forward_message(text: str, skip_trending: bool = True, skip_milestones: bool = True, skip_paid: bool = True) -> bool:
     """
     Standalone filter function to check if a message should be forwarded.
     This is a convenience function for direct use in event handlers.
@@ -301,6 +357,7 @@ def should_forward_message(text: str, skip_trending: bool = True, skip_milestone
         skip_trending: Whether to skip trending updates (default: true,
                       can be overridden via SKIP_TRENDING_UPDATES env var)
         skip_milestones: Whether to skip milestone/multiplier alerts (default: true)
+        skip_paid: Whether to skip DexScreener paid alerts (default: true)
 
     Returns:
         True if message should be forwarded, False if it should be skipped
@@ -322,6 +379,13 @@ def should_forward_message(text: str, skip_trending: bool = True, skip_milestone
     should_skip_milestones = skip_milestones and env_skip_milestones
 
     if should_skip_milestones and filters.is_milestone_alert(text):
+        return False
+
+    # Skip DexScreener PAID/payment alerts if enabled
+    env_skip_paid = os.getenv('SKIP_PAID_ALERTS', 'true').lower() == 'true'
+    should_skip_paid = skip_paid and env_skip_paid
+
+    if should_skip_paid and filters.is_dexscreener_paid_alert(text):
         return False
 
     # Add more filters here in future (spam, scams, etc.)
