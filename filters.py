@@ -55,6 +55,7 @@ class MessageFilters:
             'blocked_by_keywords': 0,
             'blocked_by_blocklist': 0,
             'blocked_by_ca_requirement': 0,
+            'blocked_by_milestone': 0,
         }
 
     @staticmethod
@@ -101,6 +102,55 @@ class MessageFilters:
 
         # Skip if 2+ indicators found (reduces false positives)
         return matches >= 2
+
+    def is_milestone_alert(self, text: str) -> bool:
+        """
+        Detect if message is a milestone/multiplier price alert.
+        Return True if it should be SKIPPED (not forwarded).
+
+        Blocks messages like:
+        - "Coin reached 2x from entry!"
+        - "5x milestone hit!"
+        - "Token has done 10x from call price"
+
+        Args:
+            text: Message text to check
+
+        Returns:
+            True if message is a milestone alert that should be skipped
+        """
+        if not text:
+            return False
+
+        # Patterns indicating milestone/multiplier alerts
+        milestone_patterns = [
+            # Multiplier + milestone language
+            r'\b\d+x\s+(from|since|reached|hit|milestone|alert)',
+            r'(reached|hit)\s+\d+x',
+            r'(milestone|alert)\s*:.*\d+x',
+            r'\d+x\s+(milestone|alert)',
+
+            # Entry/call price references with multiples
+            r'(from|since)\s+(entry|call|launch|ipo)',
+            r'(entry|call|launch)\s+price.*\d+x',
+
+            # Common milestone phrases
+            r'we\s+(hit|reached)\s+\d+x',
+            r'has\s+(hit|reached|done)\s+\d+x',
+            r'token\s+(hit|reached|done)\s+\d+x',
+
+            # Specific milestone numbers with context
+            r'(hit|reached)\s+(2x|3x|4x|5x|10x|20x|50x|100x)',
+        ]
+
+        text_lower = text.lower()
+
+        # Check if any milestone pattern matches
+        for pattern in milestone_patterns:
+            if re.search(pattern, text_lower):
+                return True
+
+        return False
 
     def check_keywords(self, text: str) -> bool:
         """
@@ -191,6 +241,12 @@ class MessageFilters:
             self.stats['blocked'] += 1
             return False, "Top Early Trending leaderboard update"
 
+        # Skip milestone/multiplier alerts
+        if self.is_milestone_alert(text):
+            self.stats['blocked'] += 1
+            self.stats['blocked_by_milestone'] += 1
+            return False, "Milestone/multiplier alert"
+
         # Check blocklist first
         if not self.check_blocklist(text):
             self.stats['blocked'] += 1
@@ -227,6 +283,7 @@ class MessageFilters:
             'blocked_by_keywords': 0,
             'blocked_by_blocklist': 0,
             'blocked_by_ca_requirement': 0,
+            'blocked_by_milestone': 0,
         }
 
 
@@ -234,7 +291,7 @@ class MessageFilters:
 filters = MessageFilters()
 
 
-def should_forward_message(text: str, skip_trending: bool = True) -> bool:
+def should_forward_message(text: str, skip_trending: bool = True, skip_milestones: bool = True) -> bool:
     """
     Standalone filter function to check if a message should be forwarded.
     This is a convenience function for direct use in event handlers.
@@ -243,6 +300,7 @@ def should_forward_message(text: str, skip_trending: bool = True) -> bool:
         text: Message text to check
         skip_trending: Whether to skip trending updates (default: true,
                       can be overridden via SKIP_TRENDING_UPDATES env var)
+        skip_milestones: Whether to skip milestone/multiplier alerts (default: true)
 
     Returns:
         True if message should be forwarded, False if it should be skipped
@@ -257,6 +315,13 @@ def should_forward_message(text: str, skip_trending: bool = True) -> bool:
 
     # Skip Top Early Trending updates if enabled
     if should_skip and filters.is_top_trending_update(text):
+        return False
+
+    # Skip milestone/multiplier alerts if enabled
+    env_skip_milestones = os.getenv('SKIP_MILESTONE_ALERTS', 'true').lower() == 'true'
+    should_skip_milestones = skip_milestones and env_skip_milestones
+
+    if should_skip_milestones and filters.is_milestone_alert(text):
         return False
 
     # Add more filters here in future (spam, scams, etc.)
