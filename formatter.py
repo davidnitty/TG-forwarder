@@ -57,9 +57,56 @@ class EnhancedFormatter:
         self.custom_watermark = custom_watermark
         self.strip_watermarks = strip_watermarks
 
+    def extract_ca_from_url(self, text: str) -> Optional[str]:
+        """
+        Extract Solana CA from various URL types in message.
+
+        Supports:
+        - GeckoTerminal: https://www.geckoterminal.com/solana/tokens/CA
+        - DexScreener: https://dexscreener.com/solana/CA
+        - Pump.fun: https://pump.fun/CA
+        - Solscan: https://solscan.io/token/CA
+
+        Examples:
+        - https://www.geckoterminal.com/solana/tokens/3uSuWER7XQnnBtU9AGCiRi1W5sYFUk8WmKj5AqyBZtd5
+        - https://dexscreener.com/solana/7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr
+        - https://pump.fun/7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr
+
+        Args:
+            text: Message text containing URLs
+
+        Returns:
+            Solana CA extracted from URL or None
+        """
+        if not text:
+            return None
+
+        # Pattern for Solana CA in URLs (32-44 base58 chars)
+        url_patterns = [
+            # GeckoTerminal (check first - most common in @solearlytrending)
+            r'geckoterminal\.com/solana/tokens/([1-9A-HJ-NP-Za-km-z]{32,44})',
+            r'geckoterminal\.com/solana/pools/([1-9A-HJ-NP-Za-km-z]{32,44})',
+            # DexScreener
+            r'dexscreener\.com/solana/([1-9A-HJ-NP-Za-km-z]{32,44})',
+            # Pump.fun
+            r'pump\.fun/([1-9A-HJ-NP-Za-km-z]{32,44})',
+            # Solscan
+            r'solscan\.io/token/([1-9A-HJ-NP-Za-km-z]{32,44})',
+        ]
+
+        for pattern in url_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                return match.group(1)
+
+        return None
+
     def extract_solana_ca(self, text: str) -> Optional[str]:
         """
-        Extract Solana contract address from message text.
+        Extract Solana contract address from message text or URLs.
+
+        Tries to extract CA from text first using regex pattern,
+        then falls back to extracting from DexScreener/Pump.fun URLs.
 
         Args:
             text: Message text to search
@@ -67,11 +114,38 @@ class EnhancedFormatter:
         Returns:
             First Solana CA found or None
         """
+        if not text:
+            return None
+
+        # Try extracting from text first
         matches = self.SOLANA_CA_PATTERN.findall(text)
         if matches:
             # Return the first match (usually the CA)
             return matches[0]
+
+        # Fallback: extract from URLs
+        ca = self.extract_ca_from_url(text)
+        if ca:
+            return ca
+
         return None
+
+    def generate_solana_links(self, ca: str) -> str:
+        """
+        Generate trading links for a Solana contract address.
+
+        Args:
+            ca: Solana contract address
+
+        Returns:
+            Formatted string with all trading links
+        """
+        return (
+            f"[PUMP](https://pump.fun/{ca}) • "
+            f"[DEX](https://dexscreener.com/solana/{ca}) • "
+            f"[GT](https://www.geckoterminal.com/solana/tokens/{ca}) • "
+            f"[SOL](https://solscan.io/token/{ca})"
+        )
 
     def extract_token_info(self, text: str) -> Tuple[Optional[str], Optional[str]]:
         """
@@ -221,10 +295,8 @@ class EnhancedFormatter:
 
         formatted_parts.append("")
 
-        # Links section
-        formatted_parts.append("🔗 Quick Links:")
-        formatted_parts.append(f"🔗 Pump.fun: https://pump.fun/{ca}")
-        formatted_parts.append(f"📊 DexScreener: https://dexscreener.com/solana/{ca}")
+        # Links section - inline with abbreviated labels
+        formatted_parts.append("🔗 " + self.generate_solana_links(ca))
         formatted_parts.append("")
 
         # Warning
@@ -244,29 +316,22 @@ class EnhancedFormatter:
 
     def _format_basic_message(self, original_text: str) -> str:
         """
-        Format a message without CA (basic formatting).
+        Format a message without CA - forward as-is with watermark only.
 
         Args:
             original_text: Original message text
 
         Returns:
-            Formatted message with basic structure
+            Original text with watermark appended
         """
-        # Strip watermarks
+        # Strip source watermarks first
         clean_text = self.strip_source_watermarks(original_text)
 
-        # Build basic formatted message
-        formatted_parts = []
+        # Add custom watermark if configured
+        if self.custom_watermark:
+            return f"{clean_text}\n\n{'━' * 30}\n{self.custom_watermark}"
 
-        formatted_parts.append("📢 Message Received")
-        formatted_parts.append("─" * 35)
-        formatted_parts.append("")
-        formatted_parts.append(clean_text[:500])  # Limit to 500 chars
-        formatted_parts.append("")
-        formatted_parts.append("━" * 30)
-        formatted_parts.append(self.custom_watermark)
-
-        return '\n'.join(formatted_parts)
+        return clean_text
 
     def should_format(self, source_channel: str, enabled_channels: List[str]) -> bool:
         """
