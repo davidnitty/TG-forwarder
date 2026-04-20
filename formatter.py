@@ -277,8 +277,9 @@ class EnhancedFormatter:
         formatted_parts.append("─" * 35)
         formatted_parts.append("")
 
-        # CA section
-        formatted_parts.append(f"📌 CA: `{ca}`")
+        # CA section - standalone code block for easy copying
+        formatted_parts.append("📌 CA:")
+        formatted_parts.append(f"`{ca}`")
         formatted_parts.append("")
 
         # Signal/Token info
