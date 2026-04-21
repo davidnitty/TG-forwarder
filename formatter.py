@@ -7,6 +7,8 @@ tracking links for Pump.fun and DexScreener.
 """
 
 import re
+import asyncio
+import aiohttp
 from datetime import datetime, timezone
 from typing import Optional, Dict, List, Tuple
 
@@ -56,6 +58,120 @@ class EnhancedFormatter:
         """
         self.custom_watermark = custom_watermark
         self.strip_watermarks = strip_watermarks
+        self._http_session: Optional[aiohttp.ClientSession] = None
+
+    async def _get_http_session(self) -> aiohttp.ClientSession:
+        """Get or create HTTP session for API requests."""
+        if self._http_session is None or self._http_session.closed:
+            timeout = aiohttp.ClientTimeout(total=10)
+            self._http_session = aiohttp.ClientSession(timeout=timeout)
+        return self._http_session
+
+    async def close(self):
+        """Close HTTP session if exists."""
+        if self._http_session and not self._http_session.closed:
+            await self._http_session.close()
+
+    async def fetch_market_cap_from_pumpfun(self, ca: str) -> Optional[float]:
+        """
+        Fetch market cap from pump.fun API for a given contract address.
+
+        Args:
+            ca: Solana contract address
+
+        Returns:
+            Market cap in USD or None if not available
+        """
+        try:
+            session = await self._get_http_session()
+            url = f"https://api.pump.fun/coins/{ca}"
+
+            async with session.get(url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    # pump.fun API returns market_cap in the response
+                    if 'market_cap' in data:
+                        return float(data['market_cap'])
+                    # Alternative: calculate from fdv if available
+                    if 'fdv' in data:
+                        return float(data['fdv'])
+        except Exception:
+            pass
+
+        return None
+
+    async def fetch_market_cap_from_dexscreener(self, ca: str) -> Optional[float]:
+        """
+        Fetch market cap from DexScreener API for a given contract address.
+
+        Args:
+            ca: Solana contract address
+
+        Returns:
+            Market cap in USD or None if not available
+        """
+        try:
+            session = await self._get_http_session()
+            url = f"https://api.dexscreener.com/latest/dex/tokens/{ca}"
+
+            async with session.get(url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if 'pairs' in data and len(data['pairs']) > 0:
+                        # Get the first pair (usually the most liquid)
+                        pair = data['pairs'][0]
+                        if 'fdv' in pair:
+                            return float(pair['fdv'])
+                        if 'marketCap' in pair:
+                            return float(pair['marketCap'])
+        except Exception:
+            pass
+
+        return None
+
+    async def fetch_market_cap(self, ca: str) -> Optional[float]:
+        """
+        Fetch market cap from pump.fun or DexScreener API.
+
+        Tries pump.fun first, then falls back to DexScreener.
+
+        Args:
+            ca: Solana contract address
+
+        Returns:
+            Market cap in USD or None if not available
+        """
+        # Try pump.fun first
+        market_cap = await self.fetch_market_cap_from_pumpfun(ca)
+        if market_cap:
+            return market_cap
+
+        # Fallback to DexScreener
+        market_cap = await self.fetch_market_cap_from_dexscreener(ca)
+        if market_cap:
+            return market_cap
+
+        return None
+
+    @staticmethod
+    def format_market_cap(market_cap: float) -> str:
+        """
+        Format market cap in human-readable form.
+
+        Args:
+            market_cap: Market cap in USD
+
+        Returns:
+            Formatted string (e.g., "10.5K", "1.2M", "3.4B")
+        """
+        if market_cap >= 1_000_000_000:
+            return f"${market_cap / 1_000_000_000:.1f}B"
+        elif market_cap >= 1_000_000:
+            return f"${market_cap / 1_000_000:.1f}M"
+        elif market_cap >= 1_000:
+            return f"${market_cap / 1_000:.1f}K"
+        else:
+            return f"${market_cap:.0f}"
 
     def extract_ca_from_url(self, text: str) -> Optional[str]:
         """
@@ -246,7 +362,7 @@ class EnhancedFormatter:
         signal = '\n'.join(signal_lines[:5])  # Max 5 lines
         return signal[:200]  # Max 200 chars
 
-    def format_solana_message(self, original_text: str) -> str:
+    async def format_solana_message(self, original_text: str) -> str:
         """
         Format a Solana trading signal message with enhanced layout.
 
@@ -266,6 +382,16 @@ class EnhancedFormatter:
         token_name, symbol = self.extract_token_info(original_text)
         signal_desc = self.extract_signal_description(original_text)
 
+        # Fetch market cap from API
+        market_cap = None
+        market_cap_formatted = "N/A"
+        try:
+            market_cap_value = await self.fetch_market_cap(ca)
+            if market_cap_value:
+                market_cap_formatted = self.format_market_cap(market_cap_value)
+        except Exception:
+            pass
+
         # Strip source watermarks
         clean_text = self.strip_source_watermarks(original_text)
 
@@ -273,27 +399,26 @@ class EnhancedFormatter:
         formatted_parts = []
 
         # Header
-        formatted_parts.append("🚨 NEW Solana CALL ⦿")
+        formatted_parts.append("🚨 NEW Fire Intern CALL ⦿")
         formatted_parts.append("─" * 35)
+        formatted_parts.append("")
+
+        # Signal section
+        formatted_parts.append("📝 Signal:")
+
+        if token_name:
+            formatted_parts.append(f"Token Name: {token_name}")
+
+        formatted_parts.append("")
+
+        # Market Cap section
+        formatted_parts.append("🏦 Market Cap:")
+        formatted_parts.append(market_cap_formatted)
         formatted_parts.append("")
 
         # CA section - standalone code block for easy copying
         formatted_parts.append("📌 CA:")
         formatted_parts.append(f"`{ca}`")
-        formatted_parts.append("")
-
-        # Signal/Token info
-        formatted_parts.append("📝 Signal:")
-
-        if token_name:
-            formatted_parts.append(f"Token: {token_name} 📌")
-        if symbol:
-            formatted_parts.append(f"Symbol: #{symbol}")
-        if not token_name and not symbol:
-            # Add signal description if no token info
-            if signal_desc:
-                formatted_parts.append(signal_desc)
-
         formatted_parts.append("")
 
         # Links section - inline with abbreviated labels

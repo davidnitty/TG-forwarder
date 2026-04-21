@@ -240,7 +240,66 @@ class TelegramForwarder:
             return f"{text}\n\n{self.watermark}"
         return self.watermark
 
-    def _format_message_text(self, text: Optional[str], source_channel: str) -> str:
+    def _extract_urls_from_message(self, message: Message) -> List[str]:
+        """
+        Extract all URLs from a message including entities, buttons, and web previews.
+
+        Args:
+            message: Telegram message object
+
+        Returns:
+            List of URLs found in the message
+        """
+        urls = []
+
+        # Extract from URL entities in the message text
+        if message.entities:
+            for entity in message.entities:
+                if isinstance(entity, (MessageEntityUrl, MessageEntityTextUrl)):
+                    if entity.url:
+                        urls.append(entity.url)
+                    elif message.text and entity.offset is not None and entity.length is not None:
+                        # Extract URL from text slice
+                        url_text = message.text[entity.offset:entity.offset + entity.length]
+                        urls.append(url_text)
+
+        # Extract from inline buttons (reply_markup)
+        if message.reply_markup and hasattr(message.reply_markup, 'rows'):
+            for row in message.reply_markup.rows:
+                for button in row.buttons:
+                    if hasattr(button, 'url') and button.url:
+                        urls.append(button.url)
+
+        # Extract from web preview
+        if message.web_preview and hasattr(message.web_preview, 'url'):
+            if message.web_preview.url:
+                urls.append(message.web_preview.url)
+
+        return list(set(urls))  # Remove duplicates
+
+    def _get_message_text_with_urls(self, message: Message) -> Optional[str]:
+        """
+        Get message text with any URLs from entities/buttons/previews appended.
+
+        Args:
+            message: Telegram message object
+
+        Returns:
+            Message text with URLs appended
+        """
+        text = message.text or ''
+
+        # Extract URLs from entities, buttons, and previews
+        urls = self._extract_urls_from_message(message)
+
+        # Append URLs if not already in text
+        for url in urls:
+            if url not in text:
+                text = f"{text}\n{url}" if text else url
+
+        return text or None
+
+    async def _format_message_text(self, text: Optional[str], source_channel: str) -> str:
         """
         Format message text with either enhanced formatting or standard watermark.
 
@@ -257,7 +316,7 @@ class TelegramForwarder:
         # Use enhanced formatting if enabled for this channel
         if self._should_use_enhanced_formatting(source_channel):
             self.logger.debug("Applying enhanced formatting")
-            return self.enhanced_formatter.format_solana_message(text)
+            return await self.enhanced_formatter.format_solana_message(text)
 
         # Use standard watermark
         return self._add_watermark_to_text(text)
@@ -265,7 +324,9 @@ class TelegramForwarder:
     async def _forward_text_only_message(self, message: Message, source_channel: str) -> bool:
         """Forward a text-only message with watermark or enhanced formatting."""
         try:
-            text = self._format_message_text(message.text, source_channel)
+            # Get text with URLs from entities/buttons/previews
+            text_with_urls = self._get_message_text_with_urls(message)
+            text = await self._format_message_text(text_with_urls, source_channel)
 
             await self.client.send_message(
                 self.destination_group,
@@ -279,13 +340,17 @@ class TelegramForwarder:
             self.logger.error(f"Failed to forward text message {message.id}: {e}")
             return False
 
-    async def _forward_media_message(self, message: Message) -> bool:
+    async def _forward_media_message(self, message: Message, source_channel: str) -> bool:
         """Forward a media message (photo, video, document, etc.)."""
         try:
             if not message.media:
                 return False
 
-            caption = message.text or ''
+            # Get caption with URLs from entities/buttons/previews
+            caption_text = self._get_message_text_with_urls(message) or ''
+
+            # Apply enhanced formatting to caption if enabled
+            caption = await self._format_message_text(caption_text, source_channel) if caption_text else caption_text
 
             if isinstance(message.media, MessageMediaPhoto):
                 await self.client.send_file(
@@ -317,8 +382,67 @@ class TelegramForwarder:
             return True
 
         except Exception as e:
-            self.logger.error(f"Failed to forward media message {message.id}: {e}")
-            return False
+            error_str = str(e)
+            # Check if this is a protected content error
+            if 'protected chat' in error_str.lower() or 'protect content' in error_str.lower():
+                self.logger.warning(f"Message {message.id} is from a protected channel, attempting workaround...")
+                return await self._forward_protected_media(message, source_channel)
+            else:
+                self.logger.error(f"Failed to forward media message {message.id}: {e}")
+                return False
+
+    async def _forward_protected_media(self, message: Message, source_channel: str) -> bool:
+        """
+        Handle forwarding of protected content by downloading and re-uploading.
+
+        Args:
+            message: The message with protected media
+            source_channel: Source channel username
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Get caption with URLs from entities/buttons/previews
+            caption_text = self._get_message_text_with_urls(message) or ''
+
+            # Apply enhanced formatting to caption if enabled
+            caption = await self._format_message_text(caption_text, source_channel) if caption_text else caption_text
+
+            # Download the media file
+            file = await self.client.download_media(message.media, file=bytes)
+
+            if file:
+                # Re-upload to destination
+                await self.client.send_file(
+                    self.destination_group,
+                    file,
+                    caption=caption,
+                    parse_mode='html'
+                )
+                self.logger.info(f"Successfully forwarded protected media message {message.id} via download/re-upload")
+                return True
+            else:
+                # Fallback: send just the text/caption
+                self.logger.warning(f"Could not download protected media {message.id}, sending text only")
+                if caption:
+                    await self.client.send_message(self.destination_group, caption)
+                    return True
+                return False
+
+        except Exception as e:
+            # Final fallback: send just the text/caption
+            self.logger.error(f"Failed to forward protected media {message.id}: {e}, trying text-only fallback")
+            try:
+                caption_text = self._get_message_text_with_urls(message) or ''
+                caption = await self._format_message_text(caption_text, source_channel) if caption_text else caption_text
+                if caption:
+                    await self.client.send_message(self.destination_group, caption)
+                    self.logger.info(f"Sent text-only fallback for protected media message {message.id}")
+                    return True
+            except Exception as fallback_error:
+                self.logger.error(f"Text-only fallback also failed for message {message.id}: {fallback_error}")
+                return False
 
     async def _forward_message(self, message: Message, source_channel: str) -> bool:
         """
@@ -356,20 +480,6 @@ class TelegramForwarder:
                 self.stats.record_blocked()
                 return False
 
-            # Check Top Early Trending filter (always active, respects env var)
-            if message.text and not should_forward_message(message.text):
-                self.logger.info(f"Message {message_id} blocked: Top Early Trending update")
-                get_forwarder_logger().log_forwarded_message(
-                    message_id=message_id,
-                    source=self.source_channel,
-                    destination=self.destination_group,
-                    status='blocked',
-                    has_media=bool(message.media),
-                    filter_reason="Top Early Trending leaderboard update"
-                )
-                self.stats.record_blocked()
-                return False
-
             # Check filters if enabled
             filter_reason = None
             if self.filters.enabled:
@@ -395,9 +505,11 @@ class TelegramForwarder:
             print(f"[INFO] {self._get_timestamp()} - Processing message {message_id} from @{source_channel}")
             success = False
 
-            if message.media:
-                success = await self._forward_media_message(message)
+            # Handle WebPage messages as text (they contain URLs, not actual media files)
+            if message.media and not isinstance(message.media, MessageMediaWebPage):
+                success = await self._forward_media_message(message, source_channel)
             else:
+                # For text-only and WebPage messages, extract URLs and forward as text
                 success = await self._forward_text_only_message(message, source_channel)
 
             if success:
@@ -538,6 +650,10 @@ class TelegramForwarder:
         # Save cache to disk
         self._save_cache_to_disk()
 
+        # Close HTTP session for enhanced formatter
+        if self.enhanced_formatter:
+            await self.enhanced_formatter.close()
+
         # Log final statistics
         stats = self.stats.get_stats()
         self.logger.info(f"Final stats: {format_number(stats['messages_forwarded'])} forwarded, "
@@ -594,16 +710,16 @@ class TelegramForwarder:
             # Register NewMessage event handler for all source channels
             self.client.add_event_handler(
                 self._handle_new_message,
-                events.NewMessage(chats=self.source_channels)
+                events.NewMessage(chats=source_entities)
             )
-            self.logger.info(f"NewMessage handler registered for {len(self.source_channels)} channels: {', '.join(['@' + ch for ch in self.source_channels])}")
+            self.logger.info(f"NewMessage handler registered for {len(source_entities)} channels: {', '.join(['@' + ch for ch in self.source_channels])}")
 
             # Register MessageEdited event handler for all source channels
             self.client.add_event_handler(
                 self._handle_edited_message,
-                events.MessageEdited(chats=self.source_channels)
+                events.MessageEdited(chats=source_entities)
             )
-            self.logger.info(f"MessageEdited handler registered for {len(self.source_channels)} channels: {', '.join(['@' + ch for ch in self.source_channels])}")
+            self.logger.info(f"MessageEdited handler registered for {len(source_entities)} channels: {', '.join(['@' + ch for ch in self.source_channels])}")
 
             # Register command handler for destination group
             self.client.add_event_handler(
