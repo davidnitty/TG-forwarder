@@ -14,14 +14,14 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application files
-COPY main.py .
-COPY login.py .
-COPY status.py .
-COPY .env.example .
+# Copy all Python files
+COPY *.py .
 
-# Create directory for session files
-RUN mkdir -p /app/data
+# Copy .env.example as reference
+COPY .env.example .env.example
+
+# Create directory for session files (use volume mount in Railway)
+RUN mkdir -p /app/session
 
 # Create non-root user
 RUN useradd -m -u 1000 botuser && \
