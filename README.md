@@ -10,6 +10,35 @@ A robust Telegram bot that forwards all messages from a public channel to a priv
 - Automatic reconnection on connection errors
 - Comprehensive logging with timestamps
 - 24/7 operation ready
+- **Smart message filtering** - Automatically skips leaderboard updates
+
+## Message Filtering
+
+The forwarder automatically skips certain message types:
+
+### Skipped Messages:
+- ❌ "Top Early Trending" leaderboard updates
+- ❌ Messages without contract addresses (if `REQUIRE_CRYPTO_ADDRESS=true`)
+
+### Forwarded Messages:
+- ✅ Individual token calls with CA
+- ✅ Enhanced formatting with links
+
+### Configuration
+
+Control filtering behavior via `.env`:
+
+```bash
+# Skip "Top Early Trending" leaderboard updates
+# Set to 'false' to forward all messages including rankings
+SKIP_TRENDING_UPDATES=true
+
+# Optional: Require crypto addresses in messages
+# Only forward messages containing detected CA addresses
+REQUIRE_CRYPTO_ADDRESS=false
+```
+
+For more details, see [TOP_TRENDING_FILTER_README.md](TOP_TRENDING_FILTER_README.md)
 
 ## Prerequisites
 
@@ -221,17 +250,25 @@ docker run -d --name forwarder --restart unless-stopped telegram-forwarder
 
 ```
 telegram-forwarder/
-├── main.py                  # Core forwarding logic
-├── login.py                 # Authentication helper
-├── test_setup.py            # Setup testing script
-├── status.py                # Status checker
-├── requirements.txt         # Python dependencies
-├── .env.example            # Environment template
-├── .env                    # Your credentials (DO NOT COMMIT)
-├── .session                # Telegram session file (auto-generated)
-├── forwarded_messages.txt  # Track forwarded message IDs (auto-generated)
-├── forwarder.log          # Application logs (auto-generated)
-└── README.md              # This file
+├── main.py                           # Core forwarding logic
+├── filters.py                        # Message filtering system
+├── formatter.py                      # Enhanced message formatting
+├── config.py                         # Configuration management
+├── logger.py                         # Enhanced logging with rotation
+├── utils.py                          # Utility functions (rate limiting, stats)
+├── login.py                          # Authentication helper
+├── status.py                         # Status checker
+├── test_setup.py                     # Setup testing script
+├── test_top_trending_filter.py       # Filter testing suite
+├── event_handler_example.py          # Usage examples
+├── TOP_TRENDING_FILTER_README.md     # Filter documentation
+├── requirements.txt                  # Python dependencies
+├── .env.example                      # Environment template
+├── .env                              # Your credentials (DO NOT COMMIT)
+├── *.session                         # Telegram session files (auto-generated)
+├── forwarded_messages.txt            # Track forwarded message IDs (auto-generated)
+├── logs/                             # Application logs (auto-generated)
+└── README.md                         # This file
 ```
 
 ## Troubleshooting

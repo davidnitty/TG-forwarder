@@ -13,6 +13,7 @@ SECURITY WARNING:
 
 import asyncio
 import sys
+import os
 from datetime import datetime
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
@@ -81,6 +82,12 @@ async def login() -> None:
         print("[INFO] Required fields: API_ID, API_HASH")
         return
 
+    # Get phone number from .env if available
+    phone = os.getenv('PHONE')
+    if phone:
+        print(f"[INFO] {get_timestamp()} - Using phone from .env: {phone}")
+        print()
+
     # Create client
     client = TelegramClient(config.session_name, config.api_id, config.api_hash)
 
@@ -89,8 +96,11 @@ async def login() -> None:
         print(f"[INFO] {get_timestamp()} - Connecting to Telegram...")
         print()
 
-        # Start the client (will prompt for phone/code if not authorized)
-        await client.start()
+        # Start the client with phone from .env if available
+        if phone:
+            await client.start(phone=phone)
+        else:
+            await client.start()
 
         print()
 
