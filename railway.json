@@ -6,8 +6,6 @@
   },
   "deploy": {
     "startCommand": "python main.py",
-    "healthcheckPath": "/",
-    "healthcheckTimeout": 100,
     "restartPolicyType": "ON_FAILURE"
   }
 }
